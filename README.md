@@ -30,7 +30,7 @@ Requirements:
 | Command | What it does |
 |---|---|
 | `/ssh [user@]host [-p PORT] [-l USER] [-i KEY]` | Connect, save the server, and route the tools to it |
-| `/ssh` | Reconnect the active server |
+| `/ssh` | Pick a saved server (active first), or type `user@host -p PORT` under Other |
 | `/ssh use USER@HOST:PORT` | Switch to a saved server |
 | `/ssh status` · `/ssh config` | Show the current connection · list saved servers |
 | `/ssh cd PATH` | Change the remote working directory (saved as that server's default) |

@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RemoteSession } from '../types'
 import {
   applyEdit,
+  connectChoices,
   diffHunks,
   emptyConfig,
   endpointKey,
@@ -40,7 +41,7 @@ const wrapped = new Set<string>()
 const USAGE = [
   'Usage:',
   '  /ssh ssh [user@]host [-p PORT] [-l USER] [-i KEY]   connect and route tools remotely',
-  '  /ssh                         reconnect the active server',
+  '  /ssh                         pick a saved server or type a new one',
   '  /ssh status | config | use USER@HOST:PORT',
   '  /ssh cd PATH                 change the remote cwd (saved as default)',
   '  /ssh exec COMMAND            run one command remotely',
@@ -246,17 +247,39 @@ async function exec($: $, command: string): Promise<string> {
   return `$ ${command}\n${tail}${r.exitCode ? `\n[exit ${r.exitCode}]` : ''}`
 }
 
+async function reconnectActive($: $): Promise<string> {
+  const config = await loadConfig($)
+  const ep = config.active && parseEndpointKey(config.active)
+  if (!ep) return USAGE
+  return connect($, ep)
+}
+
+/** Bare `/ssh`, like pi's `/remote` prompt: choose a saved server or type `user@host -p PORT` under Other. */
+async function pickServer($: $): Promise<string> {
+  const choices = connectChoices(await loadConfig($))
+  let answer: string
+  try {
+    answer = await $.ui.ask('Type user@host -p PORT under Other for a new one. Connect to which SSH server?', {
+      header: 'SSH',
+      options: choices.map(c => c.label),
+    })
+  } catch {
+    return 'Cancelled.'
+  }
+  answer = answer.trim()
+  const choice = choices.find(c => c.label === answer)
+  if (choice?.key) return connect($, parseEndpointKey(choice.key)!)
+  if (choice?.label === 'Help') return USAGE
+  if (choice || !answer) return 'Cancelled.'
+  return connect($, parseTarget(answer))
+}
+
 async function runCommand($: $, args: string): Promise<string> {
   const trimmed = args.trim()
   const [sub = '', ...rest] = shellWords(trimmed)
   const after = trimmed.slice(trimmed.indexOf(sub) + sub.length).trim()
   switch (sub) {
-    case '': {
-      const config = await loadConfig($)
-      const ep = config.active && parseEndpointKey(config.active)
-      if (!ep) return USAGE
-      return connect($, { ...ep, identity: config.endpoints[config.active!]?.identity })
-    }
+    case '': return pickServer($)
     case 'ssh': return connect($, parseTarget(after))
     case 'use': {
       const ep = parseEndpointKey(rest[0] ?? '')
@@ -394,7 +417,7 @@ export const register: Register = on => {
     try {
       const actions: Record<string, () => Promise<string>> = {
         status: () => status($),
-        connect: () => (input.target ? connect($, parseTarget(input.target)) : runCommand($, '')),
+        connect: () => (input.target ? connect($, parseTarget(input.target)) : reconnectActive($)),
         cd: () => changeDir($, input.path ?? '~'),
         off: () => disconnect($),
         note: () => setNote($, input.text ?? ''),

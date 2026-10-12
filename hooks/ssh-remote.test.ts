@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { applyEdit, diffHunks, mayChangeDir, parseTarget, remoteBashScript, resolveRemotePath, shellWords } from './lib'
+import { applyEdit, connectChoices, diffHunks, mayChangeDir, parseTarget, remoteBashScript, resolveRemotePath, shellWords } from './lib'
 
 const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
@@ -58,4 +58,46 @@ test('routes Read and Bash to the server once connected', async ($, on) => {
   expect(off.text).toContain('Disconnected')
   await $.tool.call({ tool: 'Bash', command: 'echo local' })
   expect(ranCommand).toBe('echo local')
+})
+
+test('lists saved servers for the bare /ssh picker', async () => {
+  expect(connectChoices({ endpoints: {}, memories: {} })).toEqual([{ label: 'Help' }, { label: 'Cancel' }])
+  const config = {
+    active: 'root@b:22',
+    endpoints: { 'root@a:22': {}, 'root@b:22': { note: 'gpu' }, 'root@c:22': {}, 'root@d:22': {} },
+    memories: {},
+  }
+  expect(connectChoices(config)).toEqual([
+    { label: 'root@b:22 (gpu)', key: 'root@b:22' },
+    { label: 'root@a:22', key: 'root@a:22' },
+    { label: 'root@c:22', key: 'root@c:22' },
+    { label: 'Cancel' },
+  ])
+})
+
+test('bare /ssh asks which server and connects to the answer', async ($, on) => {
+  mock.store(on)
+  const targets: string[] = []
+  on('process.run', ($, e) => {
+    const argv = (e as { argv: readonly string[] }).argv
+    targets.push(argv.find(a => a.includes('@')) ?? '')
+    return ok('/root\n/srv/app\n')
+  })
+  const answers = ['root@box -p 2202', 'root@box:2202', 'Cancel']
+  const asked: string[][] = []
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!
+    asked.push(question.options.map(o => o.label))
+    return { result: { questions: e.questions, answers: { [question.question]: answers.shift()! } } }
+  })
+
+  expect((await $.command.run({ command: 'ssh', args: '' })).text).toContain('Connected to root@box:2202')
+  expect(asked[0]).toEqual(['Help', 'Cancel'])
+
+  targets.length = 0
+  expect((await $.command.run({ command: 'ssh', args: '' })).text).toContain('Connected to root@box:2202')
+  expect(asked[1]).toEqual(['root@box:2202', 'Cancel'])
+  expect(targets[0]).toBe('root@box')
+
+  expect((await $.command.run({ command: 'ssh', args: '' })).text).toBe('Cancelled.')
 })

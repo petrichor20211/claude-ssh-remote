@@ -30,7 +30,7 @@
 | 命令 | 作用 |
 |---|---|
 | `/ssh [user@]host [-p PORT] [-l USER] [-i KEY]` | 连接并保存服务器，之后工具都在远端执行 |
-| `/ssh` | 重新连接当前选中的服务器 |
+| `/ssh` | 弹出选择框：选已保存的服务器（当前的排第一），或在 Other 里输入 `user@host -p PORT` |
 | `/ssh use USER@HOST:PORT` | 切换到已保存的服务器 |
 | `/ssh status` · `/ssh config` | 查看当前连接 · 列出已保存的服务器 |
 | `/ssh cd PATH` | 切换远程目录，并保存为这台服务器的默认目录 |

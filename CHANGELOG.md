@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- None
+
+### Changed
+
+- Bare `/ssh` now opens a picker, like pi's `/remote` prompt: choose one of up to three saved servers (the active one first), or type `user@host -p PORT` under Other. The `remote` tool's `connect` action without a target still reconnects the active server.
+
+### Fixed
+
+- None
+
 ## [0.1.0] - 2026-10-12
 
 ### Added

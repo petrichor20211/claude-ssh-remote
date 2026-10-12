@@ -241,6 +241,20 @@ export function emptyConfig(): RemoteConfig {
   return { endpoints: {}, memories: {} }
 }
 
+export type ConnectChoice = { label: string; key?: string }
+
+/** Options for the bare `/ssh` picker: up to three saved servers (active first), then Cancel. */
+export function connectChoices(config: RemoteConfig): ConnectChoice[] {
+  const keys = Object.keys(config.endpoints)
+  const active = config.active && keys.includes(config.active) ? config.active : undefined
+  const ordered = active ? [active, ...keys.filter(k => k !== active)] : keys
+  const saved = ordered.slice(0, 3).map(key => {
+    const note = config.endpoints[key]?.note
+    return { label: note ? `${key} (${note})` : key, key }
+  })
+  return saved.length ? [...saved, { label: 'Cancel' }] : [{ label: 'Help' }, { label: 'Cancel' }]
+}
+
 const IMAGE_TYPES: Record<string, 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'> = {
   png: 'image/png',
   jpg: 'image/jpeg',
