@@ -1,0 +1,11 @@
+{
+  "name": "ssh-remote",
+  "version": "0.1.0",
+  "description": "Persistent SSH remote workspaces: Bash, Read, Write and Edit run on the connected server.",
+  "author": { "name": "Yutong Bian" },
+  "homepage": "https://github.com/petrichor20211/claude-ssh-remote",
+  "repository": "https://github.com/petrichor20211/claude-ssh-remote",
+  "license": "MIT",
+  "keywords": ["ssh", "remote-development"],
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "claude-ssh-remote",
+  "owner": {
+    "name": "Yutong Bian"
+  },
+  "metadata": {
+    "description": "SSH remote workspaces for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "ssh-remote",
+      "source": "./",
+      "description": "Persistent SSH remote workspaces for Claude Code."
+    }
+  ]
+}
