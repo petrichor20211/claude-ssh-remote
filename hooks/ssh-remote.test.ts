@@ -1,13 +1,20 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { applyEdit, connectChoices, diffHunks, mayChangeDir, parseTarget, remoteBashScript, resolveRemotePath, shellWords } from './lib'
+import { applyEdit, connectChoices, diffHunks, endpointKey, parseEndpointKey, sshArgv, mayChangeDir, needsPassword, parseTarget, remoteBashScript, resolveRemotePath, shellWords } from './lib'
 
 const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 test('parses ssh targets like pi does', async () => {
   expect(parseTarget('ssh root@10.26.6.88 -p 30470')).toEqual({ user: 'root', host: '10.26.6.88', port: 30470, identity: undefined })
   expect(parseTarget('box -l ubuntu -i ~/.ssh/id')).toEqual({ user: 'ubuntu', host: 'box', port: 22, identity: '~/.ssh/id' })
-  expect(() => parseTarget('host -J jump')).toThrow()
+  const jumped = parseTarget('ssh -J root@47.106.189.41 -p 2224 root@127.0.0.1')
+  expect(jumped).toEqual({ user: 'root', host: '127.0.0.1', port: 2224, identity: undefined, jump: 'root@47.106.189.41' })
+  expect(endpointKey(jumped)).toBe('root@47.106.189.41>root@127.0.0.1:2224')
+  expect(parseEndpointKey(endpointKey(jumped))).toEqual({ user: 'root', host: '127.0.0.1', port: 2224, jump: 'root@47.106.189.41' })
+  expect(sshArgv(jumped)).toContain('root@47.106.189.41')
+  expect(parseTarget('host -Ja@j1:2200,j2').jump).toBe('a@j1:2200,j2')
+  expect(() => parseTarget('host -J -oProxyCommand=x')).toThrow()
+  expect(() => parseTarget('host -A')).toThrow()
   expect(shellWords(`a 'b c' "d\\"e"`)).toEqual(['a', 'b c', 'd"e'])
 })
 
@@ -40,7 +47,7 @@ test('routes Read and Bash to the server once connected', async ($, on) => {
     return { result: { stdout: 'hi', stderr: '', interrupted: false } }
   })
 
-  const connected = await $.command.run({ command: 'ssh', args: 'root@box -p 2202' })
+  const connected = await $.command.run({ command: 'ssh', args: 'box -l root -p 2202' })
   expect(connected.text).toContain('/srv/app')
 
   const read = await $.tool.call({ tool: 'Read', file_path: 'a.txt' })
@@ -100,4 +107,41 @@ test('bare /ssh asks which server and connects to the answer', async ($, on) => 
   expect(targets[0]).toBe('root@box')
 
   expect((await $.command.run({ command: 'ssh', args: '' })).text).toBe('Cancelled.')
+})
+
+test('asks for a password when the server refuses key auth', async ($, on) => {
+  expect(needsPassword('root@h: Permission denied (publickey,password).')).toBe(true)
+  expect(needsPassword('root@h: Permission denied (publickey).')).toBe(false)
+  mock.store(on)
+  const passwords: (string | undefined)[] = []
+  on('process.run', ($, e) => {
+    const { argv, init } = e as { argv: readonly string[]; init?: { env?: Record<string, string> } }
+    const env = init?.env
+    if (argv[0] === 'sh' && !argv.includes('ssh')) return ok('/home/me/.ssh/cc-remote-askpass')
+    if (argv.includes('BatchMode=yes')) {
+      return { value: { exitCode: 255, stdout: '', stderr: 'root@box: Permission denied (publickey,password).', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    passwords.push(env?.CC_REMOTE_PASSWORD)
+    return env?.CC_REMOTE_PASSWORD === 'right'
+      ? ok('/root\n/srv/app\n')
+      : { value: { exitCode: 255, stdout: '', stderr: 'root@box: Permission denied (publickey,password).', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const answers = ['wrong', 'right']
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!
+    return { result: { questions: e.questions, answers: { [question.question]: answers.shift()! } } }
+  })
+
+  const connected = await $.command.run({ command: 'ssh', args: 'root@box -p 2202' })
+  expect(connected.text).toContain('Connected to root@box:2202')
+  expect(passwords).toEqual(['wrong', 'right'])
+})
+
+test('keeps a global memory without a connection', async ($, on) => {
+  mock.store(on)
+  expect((await $.command.run({ command: 'ssh', args: 'memory --global' })).text).toBe('No global memory.')
+  await $.command.run({ command: 'ssh', args: 'memory --global logs go to /data/logs' })
+  expect((await $.command.run({ command: 'ssh', args: 'memory --global use uv' })).text).toBe('Global memory:\nlogs go to /data/logs\nuse uv')
+  expect((await $.command.run({ command: 'ssh', args: 'memory --global --clear' })).text).toBe('Global memory cleared.')
+  expect((await $.command.run({ command: 'ssh', args: 'memory' })).text).toContain('Not connected')
 })

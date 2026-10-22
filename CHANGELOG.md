@@ -6,11 +6,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- None
+- Jump hosts: `/ssh -J user@jump[:port][,...] -p PORT user@host` connects through `ssh -J`. The jump is part of the saved server key (`JUMP>user@host:port`), so `/ssh use` and the picker reconnect through it.
+- Password login: when a server refuses key auth and offers a password, `/ssh` asks for it in a dialog (up to three tries) and logs in through `SSH_ASKPASS`. The password is kept in process memory only and reopens a dropped connection.
+- Global memory: `/ssh memory --global [TEXT|--clear]` (or the `remote` tool's `memory` action with `global: true`) keeps memory that applies on every server. It joins the system prompt alongside the server memory and shows in `/ssh status`.
 
 ### Changed
 
 - Bare `/ssh` now opens a picker, like pi's `/remote` prompt: choose one of up to three saved servers (the active one first), or type `user@host -p PORT` under Other. The `remote` tool's `connect` action without a target still reconnects the active server.
+- `/ssh HOST` connects directly, including ssh config aliases like `/ssh train8`; the `ssh` word is no longer needed (`/ssh ssh HOST` still works).
 
 ### Fixed
 

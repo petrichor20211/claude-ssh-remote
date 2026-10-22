@@ -4,7 +4,7 @@ A Claude Code function-hooks plugin (a "mod"). It is the Claude Code port of `pi
 
 ## Layout
 
-- `hooks/register.ts`: the hooks module. It covers `/ssh`, the `remote` tool, routing for Bash, Read, Write and Edit, the `tool.check` auto-approve, the system-prompt section and the status line.
+- `hooks/register.ts`: the hooks module. It covers `/ssh`, the `remote` tool, routing for Bash, Read, Write and Edit, the `tool.check` auto-approve, the system-prompt section and the footer mode label.
 - `hooks/lib.ts`: pure helpers (parsing, quoting, ssh argv, diffs, edits). Keep `$`-free logic here so tests can reach it.
 - `hooks/ssh-remote.test.ts`: tests run by `claude plugin test .`.
 - `types/index.d.ts`: the `$.state` contract (`ssh-remote.session`).

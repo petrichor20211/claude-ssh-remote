@@ -1,6 +1,7 @@
 // Pure helpers for ssh-remote: parsing, quoting, ssh argv, diffs. No `$` here.
 
-export type Endpoint = { user: string; host: string; port: number; identity?: string }
+/** `jump` is an ssh -J spec: `[user@]host[:port]`, comma-separated for several hops. */
+export type Endpoint = { user: string; host: string; port: number; identity?: string; jump?: string }
 
 export type EndpointConfig = {
   identity?: string
@@ -13,6 +14,8 @@ export type RemoteConfig = {
   active?: string
   endpoints: Record<string, EndpointConfig>
   memories: Record<string, string>
+  /** Memory that applies on every server. */
+  globalMemory?: string
 }
 
 export type Hunk = {
@@ -55,13 +58,14 @@ export function shellWords(input: string): string[] {
   return words
 }
 
-/** Parses `[ssh] [user@]host [-p PORT] [-l USER] [-i KEY]`. */
+/** Parses `[ssh] [user@]host [-p PORT] [-l USER] [-i KEY] [-J JUMP]`. */
 export function parseTarget(input: string): Endpoint {
   const words = shellWords(input.trim())
   if (words[0] === 'ssh') words.shift()
   let user: string | undefined
   let port = 22
   let identity: string | undefined
+  let jump: string | undefined
   let target: string | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i] ?? ''
@@ -74,7 +78,9 @@ export function parseTarget(input: string): Endpoint {
     else if (w.startsWith('-p') && w.length > 2) port = Number(w.slice(2))
     else if (w === '-l') user = value()
     else if (w === '-i') identity = value()
-    else if (w.startsWith('-')) throw new Error(`unsupported option ${w} (only -p, -l, -i)`)
+    else if (w === '-J') jump = value()
+    else if (w.startsWith('-J') && w.length > 2) jump = w.slice(2)
+    else if (w.startsWith('-')) throw new Error(`unsupported option ${w} (only -p, -l, -i, -J)`)
     else if (target) throw new Error(`unexpected argument ${w}`)
     else target = w
   }
@@ -88,21 +94,26 @@ export function parseTarget(input: string): Endpoint {
   if (identity && !identity.startsWith('/') && !identity.startsWith('~/')) {
     throw new Error('-i path must be absolute or start with ~/')
   }
-  return { user: user || 'root', host: target, port, identity }
+  if (jump !== undefined && !/^[^\s>-][^\s>]*$/.test(jump)) throw new Error('invalid -J jump host')
+  return { user: user || 'root', host: target, port, identity, ...(jump ? { jump } : {}) }
 }
 
+/** `user@host:port`, prefixed with `JUMP>` when reached through a jump host. */
 export function endpointKey(ep: Endpoint): string {
-  return `${ep.user}@${ep.host}:${ep.port}`
+  return `${ep.jump ? `${ep.jump}>` : ''}${ep.user}@${ep.host}:${ep.port}`
 }
 
-/** Server memory is shared across ports of the same user@host. */
+/** Server memory is shared across ports of the same user@host (and jump). */
 export function memoryKey(ep: Endpoint): string {
-  return `${ep.user}@${ep.host}`
+  return `${ep.jump ? `${ep.jump}>` : ''}${ep.user}@${ep.host}`
 }
 
 export function parseEndpointKey(key: string): Endpoint | undefined {
-  const m = /^(.+)@([^@:]+):(\d+)$/.exec(key)
-  return m ? { user: m[1] ?? '', host: m[2] ?? '', port: Number(m[3]) } : undefined
+  const gt = key.lastIndexOf('>')
+  const jump = gt >= 0 ? key.slice(0, gt) : undefined
+  const m = /^(.+)@([^@:]+):(\d+)$/.exec(key.slice(gt + 1))
+  if (!m || jump === '') return undefined
+  return { user: m[1] ?? '', host: m[2] ?? '', port: Number(m[3]), ...(jump ? { jump } : {}) }
 }
 
 /** POSIX single-quote. */
@@ -110,12 +121,16 @@ export function q(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** The ssh argv that runs `script` with bash on the remote host over a shared master. */
-export function sshArgv(ep: Endpoint, script?: string, extra: string[] = []): string[] {
+/**
+ * The ssh argv that runs `script` with bash on the remote host over a shared master.
+ * `interactive` lets ssh ask for one password (through SSH_ASKPASS) instead of failing.
+ */
+export function sshArgv(ep: Endpoint, script?: string, extra: string[] = [], interactive = false): string[] {
   const argv = [
     'ssh',
     '-p', String(ep.port),
-    '-o', 'BatchMode=yes',
+    '-o', interactive ? 'BatchMode=no' : 'BatchMode=yes',
+    ...(interactive ? ['-o', 'NumberOfPasswordPrompts=1'] : []),
     '-o', 'ConnectTimeout=10',
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=4',
@@ -125,9 +140,15 @@ export function sshArgv(ep: Endpoint, script?: string, extra: string[] = []): st
     '-o', 'ControlPersist=yes',
   ]
   if (ep.identity) argv.push('-i', ep.identity, '-o', 'IdentitiesOnly=yes')
+  if (ep.jump) argv.push('-J', ep.jump)
   argv.push(...extra, `${ep.user}@${ep.host}`)
   if (script !== undefined) argv.push(`bash -lc ${q(script)}`)
   return argv
+}
+
+/** True when ssh failed only because it was not allowed to ask for a password. */
+export function needsPassword(stderr: string): boolean {
+  return /Permission denied \([^)]*\b(password|keyboard-interactive)\b/.test(stderr)
 }
 
 /** Joins an argv into a line a local POSIX shell runs as that argv. */

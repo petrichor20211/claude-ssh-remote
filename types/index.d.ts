@@ -1,4 +1,4 @@
-export type RemoteEndpoint = { user: string; host: string; port: number; identity?: string }
+export type RemoteEndpoint = { user: string; host: string; port: number; identity?: string; jump?: string }
 
 export type RemoteSession = {
   key: string

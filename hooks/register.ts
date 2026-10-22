@@ -11,6 +11,7 @@ import {
   imageType,
   mayChangeDir,
   memoryKey,
+  needsPassword,
   parseEndpointKey,
   parseForward,
   parseTarget,
@@ -40,13 +41,14 @@ const wrapped = new Set<string>()
 
 const USAGE = [
   'Usage:',
-  '  /ssh ssh [user@]host [-p PORT] [-l USER] [-i KEY]   connect and route tools remotely',
+  '  /ssh [user@]host [-p PORT] [-l USER] [-i KEY] [-J JUMP]   connect and route tools remotely',
   '  /ssh                         pick a saved server or type a new one',
-  '  /ssh status | config | use USER@HOST:PORT',
+  '  /ssh status | config | use [JUMP>]USER@HOST:PORT',
   '  /ssh cd PATH                 change the remote cwd (saved as default)',
   '  /ssh exec COMMAND            run one command remotely',
   '  /ssh note TEXT|--clear       label this server',
   '  /ssh memory [TEXT|--clear]   show / append / clear server memory',
+  '  /ssh memory --global [TEXT|--clear]   the same for memory shared by all servers',
   '  /ssh forward [L:HOST:R ...]  start port forwards, tools stay local',
   '  /ssh unforward | on | off | reload',
 ].join('\n')
@@ -74,15 +76,82 @@ function label(s: RemoteSession, config: RemoteConfig): string {
   return note ? `${note} (${s.key})` : s.key
 }
 
+// Drawn as a footer mode label (see the SessionMode render hook): $.ui.status
+// would prefix it with the engine's warning icon and the plugin name.
+let statusText: string | undefined
+
 function showStatus($: $, s: RemoteSession | null, config: RemoteConfig): void {
-  if (!s) return $.ui.status(undefined)
-  const name = config.endpoints[s.key]?.note ?? s.key
-  const fwd = s.forwards.length ? ` ⇆${s.forwards.length}` : ''
-  $.ui.status(s.routing ? `⇄ ${name}:${s.cwd}${fwd}` : `⇆ ${name} (tunnel only)${fwd}`)
+  const name = s && (config.endpoints[s.key]?.note ?? s.key)
+  const fwd = s?.forwards.length ? ` · ${s.forwards.length} fwd` : ''
+  statusText = !s ? undefined : s.routing ? `${name}:${s.cwd}${fwd}` : `${name} (tunnel only)${fwd}`
+  $.ui.invalidate('ui.render')
 }
 
 async function ssh($: $, ep: Endpoint, script: string, stdin?: string, timeoutMs = 60_000) {
+  await reopenMaster($, ep)
   return $.process.run(sshArgv(ep, script), { stdin, timeoutMs })
+}
+
+// ---------------------------------------------------------------- passwords
+
+// Passwords typed at the prompt, kept in this process only (as pi does) so a dropped
+// master can be reopened. Never written to the store.
+const passwords = new Map<string, string>()
+let askpassPath: string | undefined
+
+const ASKPASS_SCRIPT = `#!/bin/sh\nprintf '%s\\n' "$CC_REMOTE_PASSWORD"\n`
+
+/** A script ssh runs as SSH_ASKPASS; it echoes the password from its environment. */
+async function askpass($: $): Promise<string> {
+  if (askpassPath) return askpassPath
+  const r = await $.process.run(
+    ['sh', '-c', 'umask 077 && mkdir -p "$HOME/.ssh" && f="$HOME/.ssh/cc-remote-askpass" && cat > "$f" && chmod 700 "$f" && printf %s "$f"'],
+    { stdin: ASKPASS_SCRIPT },
+  )
+  if (r.exitCode !== 0 || !r.stdout) throw new Error(`cannot write the askpass helper: ${sshError(r)}`)
+  return (askpassPath = r.stdout)
+}
+
+/** Runs `script` with ssh allowed to log in with `password`; this also opens the shared master. */
+async function sshWithPassword($: $, ep: Endpoint, password: string, script: string) {
+  // OpenSSH < 8.4 reads a password from the controlling terminal (the TUI's) when it has
+  // one, so setsid detaches it; without a tty and with DISPLAY set it uses SSH_ASKPASS.
+  const detached = ['sh', '-c', 'command -v setsid >/dev/null && exec setsid -w "$@"; exec "$@"', 'sh', ...sshArgv(ep, script, [], true)]
+  return $.process.run(detached, {
+    timeoutMs: 30_000,
+    env: { SSH_ASKPASS: await askpass($), SSH_ASKPASS_REQUIRE: 'force', DISPLAY: 'cc-remote', CC_REMOTE_PASSWORD: password },
+  })
+}
+
+/** Reopens a dropped master for a password server; a no-op for key auth. */
+async function reopenMaster($: $, ep: Endpoint): Promise<void> {
+  const password = passwords.get(endpointKey(ep))
+  if (!password) return
+  const check = await $.process.run(sshArgv(ep, undefined, ['-O', 'check']), { timeoutMs: 5_000 }).catch(() => undefined)
+  if (check?.exitCode === 0) return
+  await sshWithPassword($, ep, password, 'true').catch(() => undefined)
+}
+
+/** Asks for the password (up to three tries) and runs `script` with it. */
+async function loginWithPassword($: $, ep: Endpoint, script: string) {
+  const key = endpointKey(ep)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let answer: string
+    try {
+      answer = await $.ui.ask(
+        `${attempt ? 'Wrong password. ' : ''}Type it under Other; it shows as typed and is kept in memory only. Password for ${key}?`,
+        { header: 'Password', options: ['Cancel', 'Use a key'] },
+      )
+    } catch {
+      throw new Error('password prompt dismissed')
+    }
+    if (answer === 'Cancel' || !answer) throw new Error('cancelled')
+    if (answer === 'Use a key') throw new Error(`connect with a key instead: /ssh ${ep.user}@${ep.host} -p ${ep.port}${ep.jump ? ` -J ${ep.jump}` : ''} -i ~/.ssh/KEY`)
+    const r = await sshWithPassword($, ep, answer, script)
+    if (r.exitCode === 0) passwords.set(key, answer)
+    if (r.exitCode === 0 || !needsPassword(r.stderr)) return r
+  }
+  throw new Error(`${key}: wrong password three times`)
 }
 
 function sshError(r: { exitCode: number; stderr: string }): string {
@@ -100,7 +169,8 @@ async function connect($: $, ep: Endpoint, cwd?: string): Promise<string> {
   const goto =
     !target || target === '~' ? 'cd' : target.startsWith('~/') ? `cd "$HOME"/${q(target.slice(2))}` : `cd ${q(target)}`
   const script = `${goto} || exit 2\nprintf '%s\\n%s\\n' "$HOME" "$PWD"`
-  const r = await ssh($, ep, script, undefined, 30_000)
+  let r = await ssh($, ep, script, undefined, 30_000)
+  if (r.exitCode !== 0 && !ep.identity && needsPassword(r.stderr)) r = await loginWithPassword($, ep, script)
   if (r.exitCode !== 0) throw new Error(`cannot connect to ${key}: ${sshError(r)}`)
   const [home = '', pwd = ''] = r.stdout.trim().split('\n')
   const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
@@ -143,7 +213,7 @@ async function changeDir($: $, path: string): Promise<string> {
 
 async function requireSession($: $): Promise<RemoteSession> {
   const s = await getSession($)
-  if (!s) throw new Error('Not connected. Use /ssh ssh user@host -p PORT first.')
+  if (!s) throw new Error('Not connected. Use /ssh user@host -p PORT first.')
   return s
 }
 
@@ -158,6 +228,7 @@ async function status($: $): Promise<string> {
     `Routing: ${s.routing ? 'Bash/Read/Write/Edit run remotely' : 'tunnel only (tools local)'}`,
     `Forwards: ${s.forwards.length ? s.forwards.join(', ') : 'none'}`,
     `Memory: ${memory ? '\n' + memory : 'none'}`,
+    `Global memory: ${config.globalMemory ? '\n' + config.globalMemory : 'none'}`,
   ].join('\n')
 }
 
@@ -191,23 +262,32 @@ async function setNote($: $, text: string): Promise<string> {
   return note ? `Note for ${s.key}: ${note}` : `Note cleared for ${s.key}.`
 }
 
-/** Without text: reads. With text: appends (deduplicated). `--clear`: clears. */
-async function memory($: $, text?: string): Promise<string> {
-  const s = await requireSession($)
+/** Without text: reads. With text: appends (deduplicated). `--clear`: clears. `global` targets the memory shared by all servers. */
+async function memory($: $, text?: string, global = false): Promise<string> {
   const config = await loadConfig($)
-  const key = memoryKey(s.endpoint)
-  const current = config.memories[key]
-  if (text === undefined || text.trim() === '') return current ? `Memory for ${key}:\n${current}` : `No memory for ${key}.`
+  const key = global ? undefined : memoryKey((await requireSession($)).endpoint)
+  const name = key ? `memory for ${key}` : 'global memory'
+  const current = key ? config.memories[key] : config.globalMemory
+  const set = (value: string | undefined) => {
+    if (!key) config.globalMemory = value
+    else if (value) config.memories[key] = value
+    else delete config.memories[key]
+  }
+  if (text === undefined || text.trim() === '') return current ? `${cap(name)}:\n${current}` : `No ${name}.`
   if (text.trim() === '--clear') {
-    delete config.memories[key]
+    set(undefined)
     await saveConfig($, config)
-    return `Memory cleared for ${key}.`
+    return `${cap(name)} cleared.`
   }
   const add = text.trim()
-  if (current?.endsWith(add)) return `Memory for ${key} already ends with that.`
-  config.memories[key] = current ? `${current}\n${add}` : add
+  if (current?.endsWith(add)) return `${cap(name)} already ends with that.`
+  set(current ? `${current}\n${add}` : add)
   await saveConfig($, config)
-  return `Memory for ${key}:\n${config.memories[key]}`
+  return `${cap(name)}:\n${current ? `${current}\n${add}` : add}`
+}
+
+function cap(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 async function forward($: $, specs: string[]): Promise<string> {
@@ -215,6 +295,7 @@ async function forward($: $, specs: string[]): Promise<string> {
   const config = await loadConfig($)
   const list = (specs.length ? specs : config.endpoints[s.key]?.forwards ?? []).map(parseForward)
   if (!list.length) throw new Error('No forwards given or saved. Example: /ssh forward 7860:127.0.0.1:7860')
+  await reopenMaster($, s.endpoint)
   const started: string[] = []
   for (const spec of list) {
     if (s.forwards.includes(spec)) continue
@@ -283,7 +364,7 @@ async function runCommand($: $, args: string): Promise<string> {
     case 'ssh': return connect($, parseTarget(after))
     case 'use': {
       const ep = parseEndpointKey(rest[0] ?? '')
-      if (!ep) throw new Error('use USER@HOST:PORT')
+      if (!ep) throw new Error('use [JUMP>]USER@HOST:PORT')
       return connect($, ep)
     }
     case 'status': return status($)
@@ -291,7 +372,10 @@ async function runCommand($: $, args: string): Promise<string> {
     case 'cd': return changeDir($, after || '~')
     case 'exec': return exec($, after)
     case 'note': return setNote($, after)
-    case 'memory': return memory($, after)
+    case 'memory': {
+      const global = rest[0] === '--global'
+      return memory($, global ? after.slice('--global'.length).trim() : after, global)
+    }
     case 'forward': return forward($, rest)
     case 'unforward': return unforward($)
     case 'on': {
@@ -307,9 +391,8 @@ async function runCommand($: $, args: string): Promise<string> {
     }
     case 'help': return USAGE
     default:
-      // `/ssh user@host -p 22` works without the `ssh` word.
-      if (sub.includes('@')) return connect($, parseTarget(trimmed))
-      return USAGE
+      // Anything else is a target: `/ssh train8`, `/ssh user@host -p 22`.
+      return connect($, parseTarget(trimmed))
   }
 }
 
@@ -380,15 +463,16 @@ export const register: Register = on => {
       description:
         'Manage the SSH remote workspace. While connected, Bash, Read, Write and Edit already run on the remote server, ' +
         'so do not wrap commands in ssh yourself. Actions: status; connect (target like "root@host -p 2202"); cd (path); ' +
-        'off; note (text); memory (no text reads; text appends; "--clear" clears); forward (specs "LPORT:HOST:RPORT", ' +
+        'off; note (text); memory (no text reads; text appends; "--clear" clears; global: true for the memory shared by all servers); forward (specs "LPORT:HOST:RPORT", ' +
         'tools return to local); unforward; on (route tools remotely again).',
       inputSchema: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['status', 'connect', 'cd', 'off', 'note', 'memory', 'forward', 'unforward', 'on'] },
-          target: { type: 'string', description: 'connect: [user@]host [-p PORT] [-i KEY]' },
+          target: { type: 'string', description: 'connect: [user@]host [-p PORT] [-i KEY] [-J JUMP]' },
           path: { type: 'string', description: 'cd: remote directory' },
           text: { type: 'string', description: 'note / memory text' },
+          global: { type: 'boolean', description: 'memory: use the memory shared by all servers' },
           specs: { type: 'array', items: { type: 'string' }, description: 'forward: LPORT:HOST:RPORT' },
         },
         required: ['action'],
@@ -397,6 +481,9 @@ export const register: Register = on => {
     showStatus($, await getSession($), await loadConfig($))
     return next(e)
   })
+
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) =>
+    next(statusText ? { ...e, props: { ...e.props, modes: [...e.props.modes, statusText] } } : e))
 
   on('session.end', async ($, e, next) => {
     const s = await getSession($)
@@ -413,7 +500,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'mcp__ssh-remote__remote' }, async ($, e) => {
-    const input = e as unknown as { action: string; target?: string; path?: string; text?: string; specs?: string[] }
+    const input = e as unknown as { action: string; target?: string; path?: string; text?: string; specs?: string[]; global?: boolean }
     try {
       const actions: Record<string, () => Promise<string>> = {
         status: () => status($),
@@ -421,7 +508,7 @@ export const register: Register = on => {
         cd: () => changeDir($, input.path ?? '~'),
         off: () => disconnect($),
         note: () => setNote($, input.text ?? ''),
-        memory: () => memory($, input.text),
+        memory: () => memory($, input.text, input.global),
         forward: () => forward($, input.specs ?? []),
         unforward: () => unforward($),
         on: () => runCommand($, 'on'),
@@ -439,6 +526,7 @@ export const register: Register = on => {
     if (!s?.routing) return next(e)
     const track = !e.run_in_background && mayChangeDir(e.command)
     const command = shellLine(sshArgv(s.endpoint, remoteBashScript(s.cwd, e.command, track ? s.cwdFile : undefined)))
+    await reopenMaster($, s.endpoint)
     wrapped.add(command)
     try {
       const ran = await next({ ...e, command })
@@ -530,6 +618,7 @@ export const register: Register = on => {
       '- Do not wrap commands in `ssh` yourself. Local paths from the environment section above do not apply remotely.',
       '- Foreground Bash calls keep their usual timeout; start long jobs with nohup/setsid and redirect output to a log file.',
       '- Use the `mcp__ssh-remote__remote` tool for status, cd, note, memory and port forwarding.',
+      config.globalMemory && `\n## Global memory for all servers (set by the user, trusted)\n${config.globalMemory}`,
       mem && `\n## Server memory for ${memoryKey(s.endpoint)} (set by the user, trusted)\n${mem}`,
     ].filter(Boolean).join('\n')
     return { sections: [...composed.sections, { id: 'ssh-remote:workspace', text, scope: 'session' as const }] }

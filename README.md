@@ -22,21 +22,22 @@ Answer `y` to add the marketplace, then choose a scope.
 
 Requirements:
 
-- Locally: OpenSSH, and key-based login to the server (`ssh-copy-id -p PORT user@host`).
+- Locally: OpenSSH. Key login (`ssh-copy-id -p PORT user@host`) is smoothest; a password server works too.
 - On the server: `bash`, `awk` and coreutils (`stat`, `base64`).
 
 ## Usage
 
 | Command | What it does |
 |---|---|
-| `/ssh [user@]host [-p PORT] [-l USER] [-i KEY]` | Connect, save the server, and route the tools to it |
+| `/ssh [user@]host [-p PORT] [-l USER] [-i KEY] [-J JUMP]` | Connect, save the server, and route the tools to it (`-J` goes through a jump host, like `ssh -J`) |
 | `/ssh` | Pick a saved server (active first), or type `user@host -p PORT` under Other |
 | `/ssh use USER@HOST:PORT` | Switch to a saved server |
 | `/ssh status` · `/ssh config` | Show the current connection · list saved servers |
 | `/ssh cd PATH` | Change the remote working directory (saved as that server's default) |
 | `/ssh exec COMMAND` | Run one command remotely and show its output |
-| `/ssh note TEXT` · `/ssh note --clear` | Set or clear the server's label (shown in the status line) |
+| `/ssh note TEXT` · `/ssh note --clear` | Set or clear the server's label (shown in the prompt footer) |
 | `/ssh memory` · `/ssh memory TEXT` · `/ssh memory --clear` | Read, append to, or clear the server memory |
+| `/ssh memory --global [TEXT\|--clear]` | The same for the global memory that applies on every server |
 | `/ssh forward [LPORT:HOST:RPORT ...]` | Start port forwards (or the saved ones); tools go back to local |
 | `/ssh unforward` | Stop the forwards |
 | `/ssh on` | Route the tools to the server again after `forward` |
@@ -49,12 +50,12 @@ Claude can do the same things with the `remote` tool (`mcp__ssh-remote__remote`)
 - **Bash**: the command is rewritten into an `ssh` call and then run by the built-in Bash tool, so its timeout, background runs and large-output handling keep working. A `cd` inside a command carries over to later commands.
 - **Read / Write / Edit**: the plugin answers these itself over SSH, returning the tools' native results (diffs and line numbers included). Images can be read; PDFs and notebooks cannot.
 - **Connection**: every call shares one OpenSSH ControlMaster socket (`~/.ssh/cc-remote-%C`), so each call is fast. If the connection drops, the next call opens a new one.
-- **Context**: while you are connected, a system-prompt section tells Claude which server it is working on, along with that server's memory. The status line shows `⇄ server:cwd`.
+- **Context**: while you are connected, a system-prompt section tells Claude which server it is working on, along with the global memory and that server's memory. The prompt footer shows `server:cwd` as a mode label.
 - **No approval prompts**, as in pi: the SSH commands the plugin builds are allowed automatically. Anything else you run locally still goes through your normal permission rules.
 
 ## Where state is kept
 
-Saved servers, notes, default directories, forwards and memories live in the plugin's Claude Code store. Server memory is keyed by `user@host`, so different ports on the same host share one memory. Passwords and keys are never stored; only the path given to `-i` is saved.
+Saved servers, notes, default directories, forwards and memories live in the plugin's Claude Code store. Server memory is keyed by `user@host`, so different ports on the same host share one memory. Passwords and keys are never stored; only the path given to `-i` is saved. When a server refuses key login and offers a password, `/ssh` asks for it in a dialog (type it under Other; the text is not masked). The password stays in this Claude Code process only and is reused to reopen a dropped connection.
 
 ## Security
 
@@ -63,7 +64,7 @@ Saved servers, notes, default directories, forwards and memories live in the plu
 
 ## Limitations
 
-- Key authentication only: no password prompt, no ProxyJump, and no `~/.ssh/config` aliases.
+- No `~/.ssh/config` aliases (ProxyJump works through `-J`). The password dialog shows the password as you type it.
 - Connections are not restored on `/resume`.
 - NotebookEdit still runs locally.
 
