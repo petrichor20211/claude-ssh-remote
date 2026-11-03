@@ -12,12 +12,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Memory modes: `/ssh memory --mode [global|server]` (or the `remote` tool's `memory` action with `mode`). In the global mode, the default, every server reads and writes one shared memory and the per-server memories are kept but not used; the server mode keeps one memory per server next to the global one, as before.
 - Bare `/ssh` now opens a picker, like pi's `/remote` prompt: choose one of up to three saved servers (the active one first), or type `user@host -p PORT` under Other. The `remote` tool's `connect` action without a target still reconnects the active server.
 - `/ssh HOST` connects directly, including ssh config aliases like `/ssh train8`; the `ssh` word is no longer needed (`/ssh ssh HOST` still works).
 
 ### Fixed
 
-- None
+- The memories now reach the model. The system prompt is rendered when a conversation starts, so a server connected later never showed its memory there. Every conversation now starts with the global memory (and, in the server mode, the connected server's) as a context block, sent again after a compaction. A connect also hands them over: with the `remote` tool's `connect` result, or with the next prompt after `/ssh`.
 
 ## [0.1.0] - 2026-10-12
 

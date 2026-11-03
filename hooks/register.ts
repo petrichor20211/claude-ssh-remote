@@ -161,6 +161,29 @@ function sshError(r: { exitCode: number; stderr: string }): string {
   return r.stderr.trim() || `exit code ${r.exitCode}`
 }
 
+// ---------------------------------------------------------------- memory in context
+
+/** The memories the model should hold: the global memory and, in the server memory mode, the connected server's. */
+function memoryText(config: RemoteConfig, s: RemoteSession | null): string | undefined {
+  const mem = s && memoryMode(config) === 'server' ? config.memories[memoryKey(s.endpoint)] : undefined
+  return [
+    config.globalMemory && `## Global memory for all servers (set by the user, trusted)\n${config.globalMemory}`,
+    s && mem && `## Server memory for ${memoryKey(s.endpoint)} (set by the user, trusted)\n${mem}`,
+  ].filter(Boolean).join('\n\n') || undefined
+}
+
+// The system prompt is rendered when the conversation starts, so a connection made later never reaches it: each
+// connect leaves the memories here, and the next tool result (the `remote` tool) or prompt (`/ssh`) carries them.
+let memoryPending = false
+
+async function takePendingMemory($: $): Promise<string | undefined> {
+  if (!memoryPending) return undefined
+  memoryPending = false
+  const s = await getSession($)
+  const text = memoryText(await loadConfig($), s)
+  return text && s ? `# ssh-remote: connected to ${s.key}\n${text}` : undefined
+}
+
 // ---------------------------------------------------------------- actions
 
 async function connect($: $, ep: Endpoint, cwd?: string): Promise<string> {
@@ -190,6 +213,7 @@ async function connect($: $, ep: Endpoint, cwd?: string): Promise<string> {
   config.active = key
   await saveConfig($, config)
   await setSession($, s)
+  memoryPending = true
   return `Connected to ${label(s, config)}. Remote cwd: ${pwd}. Bash, Read, Write and Edit now run on this server.`
 }
 
@@ -505,6 +529,19 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Every conversation starts with the memories (sent again after a compaction), connected or not.
+  on('prompt.context', async ($, e, next) => {
+    const ctx = await next(e)
+    const text = memoryText(await loadConfig($), await getSession($))
+    return text ? { ...ctx, blocks: [...ctx.blocks, { name: 'sshRemoteMemory', text }] } : ctx
+  })
+
+  // A connection made by `/ssh` reaches the model with the next prompt.
+  on('prompt.submit', async ($, e, next) => {
+    const remembered = await takePendingMemory($)
+    return next(remembered ? { ...e, context: [...(e.context ?? []), remembered] } : e)
+  })
+
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) =>
     next(statusText ? { ...e, props: { ...e.props, modes: [...e.props.modes, statusText] } } : e))
 
@@ -537,7 +574,8 @@ export const register: Register = on => {
         on: () => runCommand($, 'on'),
       }
       const text = (await actions[input.action]?.()) ?? `Unknown action ${input.action}`
-      return { result: text }
+      const remembered = await takePendingMemory($)
+      return remembered ? { result: text, context: [remembered] } : { result: text }
     } catch (err) {
       return failed(err)
     }
@@ -632,8 +670,7 @@ export const register: Register = on => {
     const s = await getSession($)
     if (!s?.routing) return composed
     const config = await loadConfig($)
-    // in the global memory mode the server memories are not used
-    const mem = memoryMode(config) === 'server' && config.memories[memoryKey(s.endpoint)]
+    const remembered = memoryText(config, s)
     const text = [
       '# SSH remote workspace (ssh-remote plugin)',
       `You are connected to the remote server ${label(s, config)}.`,
@@ -642,8 +679,7 @@ export const register: Register = on => {
       '- Do not wrap commands in `ssh` yourself. Local paths from the environment section above do not apply remotely.',
       '- Foreground Bash calls keep their usual timeout; start long jobs with nohup/setsid and redirect output to a log file.',
       '- Use the `mcp__ssh-remote__remote` tool for status, cd, note, memory and port forwarding.',
-      config.globalMemory && `\n## Global memory for all servers (set by the user, trusted)\n${config.globalMemory}`,
-      mem && `\n## Server memory for ${memoryKey(s.endpoint)} (set by the user, trusted)\n${mem}`,
+      remembered && `\n${remembered}`,
     ].filter(Boolean).join('\n')
     return { sections: [...composed.sections, { id: 'ssh-remote:workspace', text, scope: 'session' as const }] }
   })

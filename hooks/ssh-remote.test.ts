@@ -137,6 +137,39 @@ test('asks for a password when the server refuses key auth', async ($, on) => {
   expect(passwords).toEqual(['wrong', 'right'])
 })
 
+test('puts the memories in context at the start and after each connect', async ($, on) => {
+  mock.store(on)
+  on('process.run', () => ok('/root\n/srv/app\n'))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+  expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
+  await $.command.run({ command: 'ssh', args: 'memory --global logs go to /data/logs' })
+  const start = await $.prompt.context({ blocks: [] })
+  expect(start.blocks.map(b => b.name)).toEqual(['sshRemoteMemory'])
+  expect(start.blocks[0]!.text).toContain('logs go to /data/logs')
+
+  // /ssh: the next prompt carries it, once
+  expect((await $.prompt.submit({ text: 'hi' })).context ?? []).toEqual([])
+  await $.command.run({ command: 'ssh', args: 'root@box -p 2202' })
+  const after = await $.prompt.submit({ text: 'go on' })
+  expect(after.context?.[0]).toContain('connected to root@box:2202')
+  expect(after.context?.[0]).toContain('logs go to /data/logs')
+  expect((await $.prompt.submit({ text: 'again' })).context ?? []).toEqual([])
+
+  // the remote tool: the connect result carries it; other actions do not
+  const tool = await $.tool.call({ tool: 'mcp__ssh-remote__remote', action: 'connect', target: 'root@box -p 2202' } as never) as { context?: readonly string[] }
+  expect(tool.context?.[0]).toContain('logs go to /data/logs')
+  const status = await $.tool.call({ tool: 'mcp__ssh-remote__remote', action: 'status' } as never) as { context?: readonly string[] }
+  expect(status.context).toBeUndefined()
+
+  // the server memory mode adds the connected server's memory
+  await $.command.run({ command: 'ssh', args: 'memory --mode server' })
+  await $.command.run({ command: 'ssh', args: 'memory GPU 0 only' })
+  const both = (await $.prompt.context({ blocks: [] })).blocks[0]!.text
+  expect(both).toContain('Server memory for root@box')
+  expect(both).toContain('GPU 0 only')
+})
+
 test('keeps a global memory without a connection', async ($, on) => {
   mock.store(on)
   expect((await $.command.run({ command: 'ssh', args: 'memory --global' })).text).toBe('No global memory.')
