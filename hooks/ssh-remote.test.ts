@@ -143,5 +143,12 @@ test('keeps a global memory without a connection', async ($, on) => {
   await $.command.run({ command: 'ssh', args: 'memory --global logs go to /data/logs' })
   expect((await $.command.run({ command: 'ssh', args: 'memory --global use uv' })).text).toBe('Global memory:\nlogs go to /data/logs\nuse uv')
   expect((await $.command.run({ command: 'ssh', args: 'memory --global --clear' })).text).toBe('Global memory cleared.')
+  // the global memory mode (the default): plain `memory` is the global memory, connected or not
+  await $.command.run({ command: 'ssh', args: 'memory use uv' })
+  expect((await $.command.run({ command: 'ssh', args: 'memory --global' })).text).toBe('Global memory:\nuse uv')
+  expect((await $.command.run({ command: 'ssh', args: 'memory --mode' })).text).toContain('Memory mode: global')
+  // the server memory mode: plain `memory` is the connected server's
+  expect((await $.command.run({ command: 'ssh', args: 'memory --mode server' })).text).toContain('Memory mode: server')
   expect((await $.command.run({ command: 'ssh', args: 'memory' })).text).toContain('Not connected')
+  expect((await $.command.run({ command: 'ssh', args: 'memory --mode other' })).text).toContain('global|server')
 })

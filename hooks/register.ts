@@ -11,6 +11,7 @@ import {
   imageType,
   mayChangeDir,
   memoryKey,
+  memoryMode,
   needsPassword,
   parseEndpointKey,
   parseForward,
@@ -22,6 +23,7 @@ import {
   shellWords,
   sshArgv,
   type Endpoint,
+  type MemoryMode,
   type RemoteConfig,
 } from './lib'
 
@@ -49,6 +51,7 @@ const USAGE = [
   '  /ssh note TEXT|--clear       label this server',
   '  /ssh memory [TEXT|--clear]   show / append / clear server memory',
   '  /ssh memory --global [TEXT|--clear]   the same for memory shared by all servers',
+  '  /ssh memory --mode [global|server]   show / set the memory mode: global (default) shares one memory, server keeps one per server',
   '  /ssh forward [L:HOST:R ...]  start port forwards, tools stay local',
   '  /ssh unforward | on | off | reload',
 ].join('\n')
@@ -222,14 +225,16 @@ async function status($: $): Promise<string> {
   if (!s) return 'Not connected; tools run locally.'
   const config = await loadConfig($)
   const memory = config.memories[memoryKey(s.endpoint)]
+  const shared = memoryMode(config) === 'global'
   return [
     `Server: ${label(s, config)}`,
     `Remote cwd: ${s.cwd}`,
     `Routing: ${s.routing ? 'Bash/Read/Write/Edit run remotely' : 'tunnel only (tools local)'}`,
     `Forwards: ${s.forwards.length ? s.forwards.join(', ') : 'none'}`,
-    `Memory: ${memory ? '\n' + memory : 'none'}`,
+    `Memory mode: ${shared ? 'global (one memory shared by all servers)' : 'server'}`,
+    !shared && `Memory: ${memory ? '\n' + memory : 'none'}`,
     `Global memory: ${config.globalMemory ? '\n' + config.globalMemory : 'none'}`,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
 async function showConfig($: $): Promise<string> {
@@ -262,10 +267,11 @@ async function setNote($: $, text: string): Promise<string> {
   return note ? `Note for ${s.key}: ${note}` : `Note cleared for ${s.key}.`
 }
 
-/** Without text: reads. With text: appends (deduplicated). `--clear`: clears. `global` targets the memory shared by all servers. */
+/** Without text: reads. With text: appends (deduplicated). `--clear`: clears. `global`, or the global memory
+ * mode, targets the memory shared by all servers. */
 async function memory($: $, text?: string, global = false): Promise<string> {
   const config = await loadConfig($)
-  const key = global ? undefined : memoryKey((await requireSession($)).endpoint)
+  const key = global || memoryMode(config) === 'global' ? undefined : memoryKey((await requireSession($)).endpoint)
   const name = key ? `memory for ${key}` : 'global memory'
   const current = key ? config.memories[key] : config.globalMemory
   const set = (value: string | undefined) => {
@@ -284,6 +290,20 @@ async function memory($: $, text?: string, global = false): Promise<string> {
   set(current ? `${current}\n${add}` : add)
   await saveConfig($, config)
   return `${cap(name)}:\n${current ? `${current}\n${add}` : add}`
+}
+
+/** Without a mode: shows it. `global` shares one memory by all servers; `server` keeps one per server. */
+async function setMemoryMode($: $, mode?: string): Promise<string> {
+  const config = await loadConfig($)
+  const unused = Object.keys(config.memories)
+  const note = unused.length ? ` Server memories kept but not used in this mode: ${unused.join(', ')}.` : ''
+  if (!mode) return memoryMode(config) === 'global' ? `Memory mode: global (one memory shared by all servers).${note}` : 'Memory mode: server.'
+  if (mode !== 'global' && mode !== 'server') throw new Error('memory --mode global|server')
+  config.memoryMode = mode as MemoryMode
+  await saveConfig($, config)
+  return mode === 'global'
+    ? `Memory mode: global. Every server reads and writes the global memory.${note}`
+    : 'Memory mode: server. Each server keeps its own memory; the global memory still applies on every server.'
 }
 
 function cap(text: string): string {
@@ -373,6 +393,7 @@ async function runCommand($: $, args: string): Promise<string> {
     case 'exec': return exec($, after)
     case 'note': return setNote($, after)
     case 'memory': {
+      if (rest[0] === '--mode') return setMemoryMode($, rest[1])
       const global = rest[0] === '--global'
       return memory($, global ? after.slice('--global'.length).trim() : after, global)
     }
@@ -463,7 +484,8 @@ export const register: Register = on => {
       description:
         'Manage the SSH remote workspace. While connected, Bash, Read, Write and Edit already run on the remote server, ' +
         'so do not wrap commands in ssh yourself. Actions: status; connect (target like "root@host -p 2202"); cd (path); ' +
-        'off; note (text); memory (no text reads; text appends; "--clear" clears; global: true for the memory shared by all servers); forward (specs "LPORT:HOST:RPORT", ' +
+        'off; note (text); memory (no text reads; text appends; "--clear" clears; global: true for the memory shared by all servers; ' +
+        'mode "global" (default, one memory shared by all servers) or "server" (one per server) sets the memory mode); forward (specs "LPORT:HOST:RPORT", ' +
         'tools return to local); unforward; on (route tools remotely again).',
       inputSchema: {
         type: 'object',
@@ -473,6 +495,7 @@ export const register: Register = on => {
           path: { type: 'string', description: 'cd: remote directory' },
           text: { type: 'string', description: 'note / memory text' },
           global: { type: 'boolean', description: 'memory: use the memory shared by all servers' },
+          mode: { type: 'string', enum: ['global', 'server'], description: 'memory: set the memory mode' },
           specs: { type: 'array', items: { type: 'string' }, description: 'forward: LPORT:HOST:RPORT' },
         },
         required: ['action'],
@@ -500,7 +523,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'mcp__ssh-remote__remote' }, async ($, e) => {
-    const input = e as unknown as { action: string; target?: string; path?: string; text?: string; specs?: string[]; global?: boolean }
+    const input = e as unknown as { action: string; target?: string; path?: string; text?: string; specs?: string[]; global?: boolean; mode?: string }
     try {
       const actions: Record<string, () => Promise<string>> = {
         status: () => status($),
@@ -508,7 +531,7 @@ export const register: Register = on => {
         cd: () => changeDir($, input.path ?? '~'),
         off: () => disconnect($),
         note: () => setNote($, input.text ?? ''),
-        memory: () => memory($, input.text, input.global),
+        memory: () => (input.mode ? setMemoryMode($, input.mode) : memory($, input.text, input.global)),
         forward: () => forward($, input.specs ?? []),
         unforward: () => unforward($),
         on: () => runCommand($, 'on'),
@@ -609,7 +632,8 @@ export const register: Register = on => {
     const s = await getSession($)
     if (!s?.routing) return composed
     const config = await loadConfig($)
-    const mem = config.memories[memoryKey(s.endpoint)]
+    // in the global memory mode the server memories are not used
+    const mem = memoryMode(config) === 'server' && config.memories[memoryKey(s.endpoint)]
     const text = [
       '# SSH remote workspace (ssh-remote plugin)',
       `You are connected to the remote server ${label(s, config)}.`,

@@ -16,6 +16,15 @@ export type RemoteConfig = {
   memories: Record<string, string>
   /** Memory that applies on every server. */
   globalMemory?: string
+  /** `global` (the default): one memory shared by all servers, the server memories unused. `server`: each
+   * server keeps its own memory, next to the global one. */
+  memoryMode?: MemoryMode
+}
+
+export type MemoryMode = 'global' | 'server'
+
+export function memoryMode(config: RemoteConfig): MemoryMode {
+  return config.memoryMode ?? 'global'
 }
 
 export type Hunk = {

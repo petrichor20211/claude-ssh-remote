@@ -36,8 +36,9 @@
 | `/ssh cd PATH` | 切换远程目录，并保存为这台服务器的默认目录 |
 | `/ssh exec COMMAND` | 在远端执行一次命令并显示输出 |
 | `/ssh note TEXT` · `/ssh note --clear` | 设置或清除服务器备注（显示在输入框下方） |
-| `/ssh memory` · `/ssh memory TEXT` · `/ssh memory --clear` | 查看、追加或清除服务器记忆 |
+| `/ssh memory` · `/ssh memory TEXT` · `/ssh memory --clear` | 查看、追加或清除记忆（global 模式下是共享记忆，server 模式下是当前服务器的记忆） |
 | `/ssh memory --global [TEXT\|--clear]` | 同上，作用于对所有服务器生效的全局记忆 |
+| `/ssh memory --mode [global\|server]` | 查看或切换记忆模式：`global`（默认）所有服务器共享一份记忆，`server` 每台服务器各一份 |
 | `/ssh forward [LPORT:HOST:RPORT ...]` | 启动端口转发（不带参数时用已保存的配置），工具切回本地 |
 | `/ssh unforward` | 停止端口转发 |
 | `/ssh on` | 端口转发后，让工具重新在远端执行 |
@@ -50,7 +51,7 @@ Claude 也可以通过 `remote` 工具（`mcp__ssh-remote__remote`）完成上�
 - **Bash**：命令会被改写成一条 `ssh` 调用，再交给内置的 Bash 工具执行，所以超时、后台运行和大输出处理都照常可用。命令里的 `cd` 会保留到后续命令。
 - **Read / Write / Edit**：由插件自己通过 SSH 完成，返回和原生工具相同格式的结果，包括 diff 和行号。支持读取图片，不支持 PDF 和 notebook。
 - **连接**：所有调用共用一个 OpenSSH ControlMaster 连接（`~/.ssh/cc-remote-%C`），每次调用都很快。连接断开后，下一次调用会自动重新建立连接。
-- **上下文**：连接期间，系统提示里会告诉 Claude 当前操作的是哪台服务器，以及全局记忆和这台服务器的记忆。输入框下方的模式标签会显示 `服务器:目录`。
+- **上下文**：连接期间，系统提示里会告诉 Claude 当前操作的是哪台服务器，以及全局记忆（server 记忆模式下还有这台服务器的记忆）。输入框下方的模式标签会显示 `服务器:目录`。
 - **默认不弹批准**，和 pi 一样：插件自己生成的 ssh 命令会自动放行。你在本地执行的其他命令仍按原来的权限规则处理。
 
 ## 配置保存在哪里

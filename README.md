@@ -36,8 +36,9 @@ Requirements:
 | `/ssh cd PATH` | Change the remote working directory (saved as that server's default) |
 | `/ssh exec COMMAND` | Run one command remotely and show its output |
 | `/ssh note TEXT` · `/ssh note --clear` | Set or clear the server's label (shown in the prompt footer) |
-| `/ssh memory` · `/ssh memory TEXT` · `/ssh memory --clear` | Read, append to, or clear the server memory |
+| `/ssh memory` · `/ssh memory TEXT` · `/ssh memory --clear` | Read, append to, or clear the memory (the shared one in the global mode, the server's in the server mode) |
 | `/ssh memory --global [TEXT\|--clear]` | The same for the global memory that applies on every server |
+| `/ssh memory --mode [global\|server]` | Show or set the memory mode: `global` (default) shares one memory by all servers, `server` keeps one per server |
 | `/ssh forward [LPORT:HOST:RPORT ...]` | Start port forwards (or the saved ones); tools go back to local |
 | `/ssh unforward` | Stop the forwards |
 | `/ssh on` | Route the tools to the server again after `forward` |
@@ -50,7 +51,7 @@ Claude can do the same things with the `remote` tool (`mcp__ssh-remote__remote`)
 - **Bash**: the command is rewritten into an `ssh` call and then run by the built-in Bash tool, so its timeout, background runs and large-output handling keep working. A `cd` inside a command carries over to later commands.
 - **Read / Write / Edit**: the plugin answers these itself over SSH, returning the tools' native results (diffs and line numbers included). Images can be read; PDFs and notebooks cannot.
 - **Connection**: every call shares one OpenSSH ControlMaster socket (`~/.ssh/cc-remote-%C`), so each call is fast. If the connection drops, the next call opens a new one.
-- **Context**: while you are connected, a system-prompt section tells Claude which server it is working on, along with the global memory and that server's memory. The prompt footer shows `server:cwd` as a mode label.
+- **Context**: while you are connected, a system-prompt section tells Claude which server it is working on, along with the global memory and, in the server memory mode, that server's memory. The prompt footer shows `server:cwd` as a mode label.
 - **No approval prompts**, as in pi: the SSH commands the plugin builds are allowed automatically. Anything else you run locally still goes through your normal permission rules.
 
 ## Where state is kept
